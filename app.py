@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import QApplication
 from core.audio import AudioRecorder
 from core.transcribe import Transcriber
 from integration.clipboard import ClipboardManager
-from ui.widget import FloatingDictationWidget
+from ui.widget import StatusTrayIcon
 
 # --- Configure Logging ---
 import os
@@ -101,7 +101,7 @@ class AppController(QObject):
     # Internal signal to transfer audio processing to the Main Thread
     _process_audio = pyqtSignal(np.ndarray)
 
-    def __init__(self, widget: FloatingDictationWidget):
+    def __init__(self, widget: StatusTrayIcon):
         super().__init__()
         self.widget = widget
         self.recorder = AudioRecorder()
@@ -156,19 +156,17 @@ class AppController(QObject):
 
     def _auto_inject_text(self, final_text: str) -> None:
         """Automatically called upon successful transcription."""
+        self.widget.reset_idle()
+        
         if not final_text or final_text.strip() == "[No audio recorded]":
-            logger.info("Nothing to inject. Hiding UI.")
-            self.widget.hide()
+            logger.info("Nothing to inject. Reset to idle.")
             return
             
         logger.info("Auto-Injecting Text: %s", final_text)
         
-        # CRITICAL FOCUS FIX: Hide the bubble *before* pasting.
-        # This forces macOS to dump the Window Manager focus back to the previous
-        # app (Notion/Word) so that the CMD+V keystroke actually goes to the right place.
-        self.widget.hide()
-        QApplication.processEvents()
-        
+        # Because we are now using a native macOS Menu Bar icon (QSystemTrayIcon),
+        # we bypass the macOS Window Manager entirely. There is no need for hacky
+        # hide() or processEvents() loops to juggle keyboard focus!
         ClipboardManager.type_text(final_text)
 
     def cleanup(self) -> None:
@@ -200,7 +198,8 @@ def main():
     timer.start(500)
     timer.timeout.connect(lambda: None)
 
-    widget = FloatingDictationWidget()
+    widget = StatusTrayIcon()
+    widget.show()
     _controller = AppController(widget)
     
     app.aboutToQuit.connect(_controller.cleanup)
