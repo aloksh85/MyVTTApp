@@ -8,7 +8,7 @@ rm -rf build/ dist/
 # 1. Build the Main Background Daemon
 # --noconsole hides the terminal window
 # --windowed ensures it compiles as a correct macOS .app bundle
-echo "Building MyVTTApp Daemon..."
+echo "Building NeuroType Daemon..."
 pyinstaller --noconfirm \
             --windowed \
             --noconsole \
@@ -17,7 +17,8 @@ pyinstaller --noconfirm \
             --hidden-import "mlx_whisper" \
             --hidden-import "PyQt6" \
             --hidden-import "numpy" \
-            --name "MyVTTApp" \
+            --name "NeuroType" \
+            --icon "MyVTTApp.icns" \
             app.py
 
 # 2. Build the Trigger Client
@@ -28,6 +29,7 @@ pyinstaller --noconfirm \
             --windowed \
             --noconsole \
             --name "StartDictation" \
+            --icon "MyVTTApp.icns" \
             client.py
 
 echo "Build complete! Setting LSBackgroundOnly flag on StartDictation..."
@@ -35,7 +37,7 @@ echo "Build complete! Setting LSBackgroundOnly flag on StartDictation..."
 echo "Build complete! Setting LSBackgroundOnly flag on Apps..."
 
 # Patch the Info.plist explicitly to prevent focus stealing and dock icons
-for APP_NAME in "StartDictation" "MyVTTApp"; do
+for APP_NAME in "StartDictation" "NeuroType"; do
     PLIST_PATH="dist/${APP_NAME}.app/Contents/Info.plist"
     if [ -f "$PLIST_PATH" ]; then
         # Add LSUIElement to the plist so it never steals focus and hides from Dock
@@ -57,6 +59,6 @@ done
 
 # Clean up the raw UNIX executable folders that PyInstaller generates, 
 # which cause users to accidentally open them and spawn Terminal windows.
-rm -rf dist/MyVTTApp dist/StartDictation
+rm -rf dist/NeuroType dist/StartDictation
 
 echo "Done! You can find the native .app bundles in the dist/ folder."

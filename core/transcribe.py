@@ -25,15 +25,17 @@ else:
 class Transcriber:
     """Handles loading and running inference on the Whisper models."""
 
+    # Pinned model revision hash for supply chain verification.
+    # To verify: git ls-remote https://huggingface.co/mlx-community/whisper-base-mlx main
+    PINNED_REVISION = "a8f14b616d37f94a159016b04f80a7f7003a1b8f"
+
     def __init__(self) -> None:
         """Initialize the model based on system architecture."""
         if IS_MAC_SILICON:
             self.model_path = "mlx-community/whisper-base-mlx"
-            self.model_revision = "a8f14b616d37f94a159016b04f80a7f7003a1b8f"
             self._warmup_mlx()
         else:
             self.model_path = "base"
-            self.model_revision = None
             self.whisper_model_instance = self._load_faster_whisper()
 
     def _warmup_mlx(self) -> None:
@@ -41,7 +43,7 @@ class Transcriber:
         logger.info("Warming up MLX Whisper model memory buffers...")
         try:
             dummy_audio = np.zeros(16000, dtype=np.float32)
-            mlx_whisper.transcribe(dummy_audio, path_or_hf_repo=self.model_path, revision=self.model_revision)
+            mlx_whisper.transcribe(dummy_audio, path_or_hf_repo=self.model_path)
             logger.info("Local MLX model ready for inference!")
         except Exception as e:
             logger.error("Model warmup failed: %s", e)
@@ -65,7 +67,7 @@ class Transcriber:
         try:
             if IS_MAC_SILICON:
                 result = mlx_whisper.transcribe(
-                    audio_array, path_or_hf_repo=self.model_path, revision=self.model_revision
+                    audio_array, path_or_hf_repo=self.model_path
                 )
                 text = result.get("text", "").strip()
             else:

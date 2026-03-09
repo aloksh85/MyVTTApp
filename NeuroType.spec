@@ -1,12 +1,21 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_all
+
+datas = []
+binaries = []
+hiddenimports = ['mlx_whisper', 'PyQt6', 'numpy']
+tmp_ret = collect_all('mlx')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('mlx_whisper')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
 a = Analysis(
-    ['client.py'],
+    ['app.py'],
     pathex=[],
-    binaries=[],
-    datas=[],
-    hiddenimports=[],
+    binaries=binaries,
+    datas=datas,
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -21,7 +30,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='StartDictation',
+    name='NeuroType',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -41,11 +50,11 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='StartDictation',
+    name='NeuroType',
 )
 app = BUNDLE(
     coll,
-    name='StartDictation.app',
+    name='NeuroType.app',
     icon='MyVTTApp.icns',
     bundle_identifier=None,
 )

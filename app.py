@@ -21,7 +21,7 @@ from ui.widget import StatusTrayIcon
 
 # --- Configure Logging ---
 import os
-log_dir = os.path.expanduser("~/Library/Logs/MyVTTApp")
+log_dir = os.path.expanduser("~/Library/Logs/NeuroType")
 os.makedirs(log_dir, exist_ok=True)
 log_file = os.path.join(log_dir, "daemon.log")
 
@@ -123,7 +123,7 @@ class AppController(QObject):
 
         # Generate Authentication Token to secure the local socket
         self.auth_token = secrets.token_hex(32)
-        auth_dir = os.path.expanduser("~/Library/Application Support/MyVTTApp")
+        auth_dir = os.path.expanduser("~/Library/Application Support/NeuroType")
         os.makedirs(auth_dir, exist_ok=True)
         self.auth_file = os.path.join(auth_dir, "auth.token")
         with open(self.auth_file, "w") as f:
@@ -199,7 +199,7 @@ class AppController(QObject):
 
 def main():
     """Start the PyQt6 event loop and application."""
-    logger.info("Starting Premium VTT Application...")
+    logger.info("Starting NeuroType Premium VTT Application...")
 
     app = QApplication(sys.argv)
     

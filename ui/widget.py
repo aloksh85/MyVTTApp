@@ -34,11 +34,11 @@ class StatusTrayIcon(QSystemTrayIcon):
         self.transcribing_icon = self._create_icon(QColor("orange"))
 
         self.setIcon(self.idle_icon)
-        self.setToolTip("MyVTTApp - Idle")
+        self.setToolTip("NeuroType - Idle")
 
         # Provide a context menu so the user can easily quit the invisible background app
         self.menu = QMenu()
-        quit_action = self.menu.addAction("Quit MyVTTApp")
+        quit_action = self.menu.addAction("Quit NeuroType")
         quit_action.triggered.connect(QApplication.instance().quit)
         self.setContextMenu(self.menu)
 
@@ -67,4 +67,4 @@ class StatusTrayIcon(QSystemTrayIcon):
     def reset_idle(self) -> None:
         """Return the icon to the black idle state."""
         self.setIcon(self.idle_icon)
-        self.setToolTip("MyVTTApp - Idle")
+        self.setToolTip("NeuroType - Idle")

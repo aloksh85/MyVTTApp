@@ -2,7 +2,7 @@
 """
 client.py
 
-A simple CLI utility to interact with the background MyVTTApp daemon.
+A simple CLI utility to interact with the background NeuroType daemon.
 Can be used by external macros, Shortcuts, or script wrappers
 to trigger dictation cleanly without global keyboard listeners.
 """
@@ -12,7 +12,7 @@ import sys
 import os
 import logging
 
-log_dir = os.path.expanduser("~/Library/Logs/MyVTTApp")
+log_dir = os.path.expanduser("~/Library/Logs/NeuroType")
 os.makedirs(log_dir, exist_ok=True)
 log_file = os.path.join(log_dir, "client.log")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s", filename=log_file)
@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 DAEMON_PORT = 9999
 
 def ping_daemon(command: str = "toggle") -> None:
-    auth_file = os.path.expanduser("~/Library/Application Support/MyVTTApp/auth.token")
+    auth_file = os.path.expanduser("~/Library/Application Support/NeuroType/auth.token")
     if not os.path.exists(auth_file):
         print("Error: Authentication token not found. Is the daemon running?", file=sys.stderr)
         sys.exit(1)
