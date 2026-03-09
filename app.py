@@ -8,7 +8,7 @@ import sys
 import logging
 import platform
 import signal
-
+import secrets
 import numpy as np
 import socket
 from PyQt6.QtCore import pyqtSignal, QObject, QThread, QTimer
@@ -36,12 +36,13 @@ OS_NAME = platform.system()
 DAEMON_PORT = 9999
 
 class CommandListener(QThread):
-    """Background listener for socket commands (e.g., 'toggle')."""
+    """Background listener for socket commands (e.g., 'AUTH:<token>:toggle')."""
     toggle_signal = pyqtSignal()
 
-    def __init__(self):
+    def __init__(self, auth_token: str):
         super().__init__()
         self.keep_running = True
+        self.auth_token = auth_token
 
     def run(self):
         try:
@@ -58,9 +59,12 @@ class CommandListener(QThread):
                         with conn:
                             data = conn.recv(1024)
                             if data:
-                                cmd = data.decode('utf-8').strip()
-                                if cmd == 'toggle':
+                                cmd_str = data.decode('utf-8').strip()
+                                parts = cmd_str.split(":", 2)
+                                if len(parts) == 3 and parts[0] == "AUTH" and parts[1] == self.auth_token and parts[2] == "toggle":
                                     self.toggle_signal.emit()
+                                else:
+                                    logger.warning("Rejected unauthorized or invalid socket command: %s", cmd_str)
                     except socket.timeout:
                         continue
         except Exception as e:
@@ -117,8 +121,17 @@ class AppController(QObject):
         # Connect the background audio signal to the main-thread execution
         self._process_audio.connect(self._do_transcribe)
 
+        # Generate Authentication Token to secure the local socket
+        self.auth_token = secrets.token_hex(32)
+        auth_dir = os.path.expanduser("~/Library/Application Support/MyVTTApp")
+        os.makedirs(auth_dir, exist_ok=True)
+        self.auth_file = os.path.join(auth_dir, "auth.token")
+        with open(self.auth_file, "w") as f:
+            f.write(self.auth_token)
+        os.chmod(self.auth_file, 0o600)
+
         # Start the socket Command Listener
-        self.command_listener = CommandListener()
+        self.command_listener = CommandListener(self.auth_token)
         self.command_listener.toggle_signal.connect(self._toggle_recording)
         self.command_listener.start()
 
@@ -178,6 +191,10 @@ class AppController(QObject):
             self.command_listener.stop()
         if hasattr(self, 'transcribe_thread') and self.transcribe_thread.isRunning():
             self.transcribe_thread.wait()
+            
+        # Clean up the auth token
+        if hasattr(self, 'auth_file') and os.path.exists(self.auth_file):
+            os.remove(self.auth_file)
 
 
 def main():

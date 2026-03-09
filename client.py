@@ -20,13 +20,23 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 DAEMON_PORT = 9999
 
 def ping_daemon(command: str = "toggle") -> None:
+    auth_file = os.path.expanduser("~/Library/Application Support/MyVTTApp/auth.token")
+    if not os.path.exists(auth_file):
+        print("Error: Authentication token not found. Is the daemon running?", file=sys.stderr)
+        sys.exit(1)
+        
     try:
+        with open(auth_file, "r") as f:
+            auth_token = f.read().strip()
+            
+        payload = f"AUTH:{auth_token}:{command}"
+        
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             # Set a very tight timeout. We aren't waiting for a response, just sending a ping.
             s.settimeout(2.0)
             s.connect(('127.0.0.1', DAEMON_PORT))
-            s.sendall(command.encode('utf-8'))
-            print(f"Sent '{command}' command to VTT daemon successfully.")
+            s.sendall(payload.encode('utf-8'))
+            print(f"Sent authenticated '{command}' command to VTT daemon successfully.")
     except ConnectionRefusedError:
         print("Error: The VTT daemon is not running on port 9999. Start it first with './run.sh'", file=sys.stderr)
         sys.exit(1)
