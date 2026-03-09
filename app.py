@@ -1,349 +1,219 @@
 """
-Offline Voice-to-Text Application.
+Main Application Entry Point.
 
-This module provides a cross-platform (macOS and Linux) application that:
-1. Records audio from the microphone directly into memory.
-2. Transcribes the audio locally using Apple Silicon's MLX (mlx-whisper)
-   or faster-whisper on other platforms.
-3. Securely pastes the transcribed text into the user's active application.
-
-Production hardened and PEP-8 compliant.
+Wires the PyQt6 GUI with the microphone and AI transcription layers.
 """
 
+import sys
 import logging
 import platform
-import queue
-import subprocess
-import threading
-import time
-from typing import Optional
+import signal
 
 import numpy as np
-import pyperclip
-import sounddevice as sd
-from pynput import keyboard
+import socket
+from PyQt6.QtCore import pyqtSignal, QObject, QThread, QTimer
+from PyQt6.QtWidgets import QApplication
+
+from core.audio import AudioRecorder
+from core.transcribe import Transcriber
+from integration.clipboard import ClipboardManager
+from ui.widget import FloatingDictationWidget
 
 # --- Configure Logging ---
+import os
+log_dir = os.path.expanduser("~/Library/Logs/MyVTTApp")
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, "daemon.log")
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    filename=log_file
 )
 logger = logging.getLogger(__name__)
 
-# --- Platform Detection ---
-OS_NAME: str = platform.system()
-ARCH_NAME: str = platform.machine()
-IS_MAC_SILICON: bool = (OS_NAME == "Darwin" and ARCH_NAME == "arm64")
+OS_NAME = platform.system()
+DAEMON_PORT = 9999
 
-if IS_MAC_SILICON:
-    import mlx_whisper
-else:
-    from faster_whisper import WhisperModel
+class CommandListener(QThread):
+    """Background listener for socket commands (e.g., 'toggle')."""
+    toggle_signal = pyqtSignal()
 
-if OS_NAME == "Darwin":
-    import rumps
-else:
-    import pystray
-    from PIL import Image, ImageDraw
+    def __init__(self):
+        super().__init__()
+        self.keep_running = True
 
-# --- Configuration Constants ---
-SAMPLE_RATE: int = 16000
-CHANNELS: int = 1
-# Approximately 10 minutes of audio buffers max
-MAX_QUEUE_SIZE: int = 6000
-
-if IS_MAC_SILICON:
-    MODEL_PATH: str = "mlx-community/whisper-base-mlx"
-else:
-    MODEL_PATH: str = "base"
-
-HOTKEY: str = "<cmd>+<shift>+r" if OS_NAME == "Darwin" else "<ctrl>+<shift>+r"
-
-
-class AppState:
-    """Manages the application's global state and threads."""
-
-    def __init__(self) -> None:
-        """Initialize the application state."""
-        self.is_recording: bool = False
-        self.audio_queue: queue.Queue[np.ndarray] = queue.Queue(
-            maxsize=MAX_QUEUE_SIZE)
-        self.record_thread: Optional[threading.Thread] = None
-        self.whisper_model_instance = None
-
-        if not IS_MAC_SILICON:
-            logger.info("Loading faster-whisper model into memory...")
-            self.whisper_model_instance = WhisperModel(
-                MODEL_PATH, device="cpu", compute_type="int8"
-            )
-
-
-# Initialize global state
-state = AppState()
-
-
-def audio_callback(
-    indata: np.ndarray, frames: int, time_info: dict, status: sd.CallbackFlags
-) -> None:
-    """
-    Callback function invoked by sounddevice for each audio block.
-
-    Args:
-        indata: The recorded audio data as a NumPy array.
-        frames: The number of frames in the block.
-        time_info: Dictionary containing timing information.
-        status: Status flags indicating errors or warnings.
-    """
-    if status:
-        logger.warning("Audio input status warning: %s", status)
-
-    if state.is_recording:
+    def run(self):
         try:
-            # Drop chunks if the queue is full to prevent unbounded memory
-            # growth
-            state.audio_queue.put_nowait(indata.copy())
-        except queue.Full:
-            logger.error(
-                "Audio queue full! Dropping frames to prevent memory leak.")
-
-
-def start_recording() -> None:
-    """Start the microphone recording thread."""
-    state.is_recording = True
-
-    # Clear lingering data from previous recordings
-    with state.audio_queue.mutex:
-        state.audio_queue.queue.clear()
-
-    def record_process() -> None:
-        """Inner function to run the sounddevice InputStream."""
-        try:
-            with sd.InputStream(
-                samplerate=SAMPLE_RATE,
-                channels=CHANNELS,
-                dtype="float32",
-                callback=audio_callback,
-            ):
-                while state.is_recording:
-                    time.sleep(0.1)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind(('127.0.0.1', DAEMON_PORT))
+                s.listen()
+                s.settimeout(1.0)
+                logger.info("Daemon listening on localhost:%s", DAEMON_PORT)
+                
+                while self.keep_running:
+                    try:
+                        conn, addr = s.accept()
+                        with conn:
+                            data = conn.recv(1024)
+                            if data:
+                                cmd = data.decode('utf-8').strip()
+                                if cmd == 'toggle':
+                                    self.toggle_signal.emit()
+                    except socket.timeout:
+                        continue
         except Exception as e:
-            logger.error("Error during recording: %s", e)
+            logger.error("Command listener failed: %s", e)
 
-    state.record_thread = threading.Thread(target=record_process, daemon=True)
-    state.record_thread.start()
-    logger.info("Recording started. Microphone active.")
+    def stop(self):
+        self.keep_running = False
+        self.wait()
 
+class TranscribeThread(QThread):
+    """Background thread to run inference without freezing the UI."""
+    finished_signal = pyqtSignal(str)
 
-def stop_recording() -> None:
-    """Stop the microphone recording thread and trigger processing."""
-    if not state.is_recording:
-        return
+    def __init__(self, transcriber, audio_data):
+        super().__init__()
+        self.transcriber = transcriber
+        self.audio_data = audio_data
 
-    state.is_recording = False
-    if state.record_thread:
-        state.record_thread.join(timeout=2.0)
+    def run(self):
+        try:
+            text = self.transcriber.transcribe(self.audio_data)
+            self.finished_signal.emit(text)
+        except Exception as e:
+            logger.error("Transcription thread failed: %s", e)
+            self.finished_signal.emit("")
 
-    logger.info("Recording stopped. Processing audio...")
-    process_audio()
-
-
-def process_audio() -> None:
-    """Extract audio from the queue and transcribe it entirely in-memory."""
-    audio_data_list = []
-    while not state.audio_queue.empty():
-        audio_data_list.append(state.audio_queue.get())
-
-    if not audio_data_list:
-        logger.info("No audio frames recorded.")
-        return
-
-    # Combine array chunks into a single contiguous flat 1D array
-    # ML models generally require a 1D float32 array normalized between -1.0
-    # and 1.0
-    audio_array = np.concatenate(audio_data_list, axis=0).flatten()
-
-    logger.info(
-        "Audio processed (shape: %s). Transcribing in-memory...",
-        audio_array.shape)
-
-    try:
-        text: str = ""
-        if IS_MAC_SILICON:
-            # MLX whisper accepts ndarray directly
-            result = mlx_whisper.transcribe(
-                audio_array, path_or_hf_repo=MODEL_PATH
-            )
-            text = result.get("text", "").strip()
-        else:
-            # Faster-whisper accepts ndarray directly
-            segments, _ = state.whisper_model_instance.transcribe(
-                audio_array, beam_size=5
-            )
-            text = " ".join([segment.text for segment in segments]).strip()
-
-        logger.info("Transcription Result: %s", text)
-
-        if text:
-            type_text(text)
-
-    except Exception as e:
-        logger.error("Transcriber inference failed: %s", e)
-
-
-def type_text(text: str) -> None:
+class AppController(QObject):
     """
-    Securely inject text into the active user window.
-
-    Temporarily uses the clipboard, simulating a 'paste' shortcut,
-    then restores the prior clipboard value to prevent data leakage.
-
-    Args:
-        text: The transcribed text string to be pasted.
+    Coordinates between the GUI Thread, the Audio Thread,
+    and transcription models.
     """
-    # 1. Back up current clipboard state
-    try:
-        original_clipboard = pyperclip.paste()
-    except Exception as e:
-        logger.warning("Could not read original clipboard: %s", e)
-        original_clipboard = ""
 
-    # 2. Inject transcription to clipboard
-    try:
-        pyperclip.copy(text)
-        time.sleep(0.05)  # Let clipboard subsystem settle
-    except Exception as e:
-        logger.error("Clipboard write failed: %s", e)
-        return
+    # Signals to safely update the GUI from the background hotkey thread
+    recording_started = pyqtSignal()
+    recording_stopped = pyqtSignal()
+    transcription_ready = pyqtSignal(str)
+    
+    # Internal signal to transfer audio processing to the Main Thread
+    _process_audio = pyqtSignal(np.ndarray)
 
-    # 3. Trigger Paste automation
-    if OS_NAME == "Darwin":
-        apple_script = """
-        tell application "System Events"
-            keystroke "v" using command down
-        end tell
+    def __init__(self, widget: FloatingDictationWidget):
+        super().__init__()
+        self.widget = widget
+        self.recorder = AudioRecorder()
+
+        # Wire signals to the widget UI safely across threads
+        self.recording_started.connect(lambda: self.widget.set_listening(True))
+        self.recording_stopped.connect(lambda: self.widget.set_listening(False))
+        self.transcription_ready.connect(self._auto_inject_text)
+
+        # The ML Transcriber is heavy, loaded asynchronously or lazily
+        self.transcriber = Transcriber()
+        
+        # Connect the background audio signal to the main-thread execution
+        self._process_audio.connect(self._do_transcribe)
+
+        # Start the socket Command Listener
+        self.command_listener = CommandListener()
+        self.command_listener.toggle_signal.connect(self._toggle_recording)
+        self.command_listener.start()
+
+    def _toggle_recording(self) -> None:
         """
-        try:
-            subprocess.run(["osascript", "-e", apple_script], check=True)
-        except subprocess.CalledProcessError as e:
-            logger.error("AppleScript paste failed: %s", e)
-    else:
-        # Cross-platform / Linux fallback
-        try:
-            import pyautogui
-            pyautogui.hotkey("ctrl", "v")
-        except ImportError:
-            logger.warning("pyautogui not installed. Falling back to xdotool.")
-            subprocess.run(["xdotool", "key", "ctrl+v"], check=False)
+        Triggered by global hotkey (runs in a background pynput thread).
+        Emits signals to the main GUI thread.
+        """
+        if not self.recorder.is_recording:
+            # Widget isn't active, start recording
+            self.recording_started.emit()
+            self.recorder.start()
+        else:
+            # Widget is active, stop and process
+            self.recording_stopped.emit()
+            audio_data = self.recorder.stop()
 
-    logger.info("Text successfully injected.")
+            if audio_data is not None and len(audio_data) > 0:
+                # Emit to main thread to avoid Metal/GPU cross-thread crash
+                self._process_audio.emit(audio_data)
+            else:
+                self.transcription_ready.emit("[No audio recorded]")
 
-    # 4. Restore the clipboard to prevent privacy leaks
-    time.sleep(0.1)  # Ensure paste finishes before overwriting clipboard
-    try:
-        pyperclip.copy(original_clipboard)
-        logger.debug("Clipboard state restored automatically.")
-    except Exception as e:
-        logger.error("Failed to restore clipboard state: %s", e)
+    def _do_transcribe(self, audio_data: np.ndarray) -> None:
+        """Executes transcription on a background QThread to keep UI fluid."""
+        logger.info("Executing transcription on a dedicated QThread...")
+        
+        self.transcribe_thread = TranscribeThread(self.transcriber, audio_data)
+        self.transcribe_thread.finished_signal.connect(self._on_transcription_finished)
+        self.transcribe_thread.start()
+
+    def _on_transcription_finished(self, text: str) -> None:
+        """Emit the returned text back to the main thread."""
+        self.transcription_ready.emit(text)
+
+    def _auto_inject_text(self, final_text: str) -> None:
+        """Automatically called upon successful transcription."""
+        if not final_text or final_text.strip() == "[No audio recorded]":
+            logger.info("Nothing to inject. Hiding UI.")
+            self.widget.hide()
+            return
+            
+        logger.info("Auto-Injecting Text: %s", final_text)
+        
+        # CRITICAL FOCUS FIX: Hide the bubble *before* pasting.
+        # This forces macOS to dump the Window Manager focus back to the previous
+        # app (Notion/Word) so that the CMD+V keystroke actually goes to the right place.
+        self.widget.hide()
+        QApplication.processEvents()
+        
+        ClipboardManager.type_text(final_text)
+
+    def cleanup(self) -> None:
+        """Gracefully close background processing threads before exit."""
+        logger.info("Cleaning up application resources...")
+        if self.recorder.is_recording:
+            self.recorder.stop()
+        if hasattr(self, 'command_listener'):
+            self.command_listener.stop()
+        if hasattr(self, 'transcribe_thread') and self.transcribe_thread.isRunning():
+            self.transcribe_thread.wait()
 
 
-def on_activate_h() -> None:
-    """Toggle logic triggered by the global hotkey."""
-    if not state.is_recording:
-        start_recording()
-    else:
-        stop_recording()
+def main():
+    """Start the PyQt6 event loop and application."""
+    logger.info("Starting Premium VTT Application...")
+
+    app = QApplication(sys.argv)
+    
+    # Needs to stay resident in memory even when no windows are open
+    app.setQuitOnLastWindowClosed(False)
+
+    # Bind Ctrl+C to gracefully terminate the application
+    signal.signal(signal.SIGINT, lambda sig, frame: app.quit())
+    
+    # PyQt6 event loop blocks Python signals. A dummy timer is required to let Python 
+    # process the Ctrl+C interrupt gracefully.
+    timer = QTimer()
+    timer.start(500)
+    timer.timeout.connect(lambda: None)
+
+    widget = FloatingDictationWidget()
+    _controller = AppController(widget)
+    
+    app.aboutToQuit.connect(_controller.cleanup)
+
+    logger.info("Ready! Send 'toggle' via client.py to begin dictation.")
+
+    sys.exit(app.exec())
 
 
-def setup_hotkeys() -> keyboard.GlobalHotKeys:
-    """
-    Initialize global hotkey listener.
-
-    Returns:
-        The instantiated global hotkey listener object.
-    """
-    listener = keyboard.GlobalHotKeys({HOTKEY: on_activate_h})
-    listener.start()
-    return listener
-
-
-if OS_NAME == "Darwin":
-
-    class VTTApp(rumps.App):
-        """macOS menu bar application interface."""
-
-        def __init__(self) -> None:
-            """Initialize the menu bar application."""
-            super().__init__("🎙️")
-            self.menu = [f"Toggle Recording ({HOTKEY})"]
-            self.hotkey_listener = setup_hotkeys()
-
-        @rumps.timer(0.5)
-        def update_ui(self, sender: rumps.Timer) -> None:
-            """Poll and update the menu bar icon based on recording state."""
-            self.title = "🔴" if state.is_recording else "🎙️"
-
-        @rumps.clicked(f"Toggle Recording ({HOTKEY})")
-        def on_toggle(self, sender: rumps.MenuItem) -> None:
-            """Handle manual click on the tray toggle button."""
-            on_activate_h()
-
-    def run_ui() -> None:
-        """Start the macOS application loop."""
-        app = VTTApp()
-        app.run()
-
-else:
-    # Linux Tray Icon Logic
-    def create_image(color1: str, color2: str) -> Image.Image:
-        """Create a dynamic tray icon placeholder."""
-        image = Image.new("RGB", (64, 64), color1)
-        dc = ImageDraw.Draw(image)
-        dc.rectangle((16, 16, 48, 48), fill=color2)
-        return image
-
-    def run_ui() -> None:
-        """Start the Linux system tray application loop."""
-        setup_hotkeys()
-
-        icon = pystray.Icon("VTT")
-        icon.icon = create_image("black", "white")
-
-        def on_clicked(_icon: pystray.Icon, _item: pystray.MenuItem) -> None:
-            """Handle manual click on the tray toggle button."""
-            on_activate_h()
-
-        def updater() -> None:
-            """Update the system tray icon based on recording state."""
-            while True:
-                icon.icon = (
-                    create_image("red", "white")
-                    if state.is_recording
-                    else create_image("black", "white")
-                )
-                time.sleep(0.5)
-
-        threading.Thread(target=updater, daemon=True).start()
-
-        menu = pystray.Menu(
-            pystray.MenuItem(f"Toggle Recording ({HOTKEY})", on_clicked)
-        )
-        icon.menu = menu
-        icon.run()
-
+import multiprocessing
 
 if __name__ == "__main__":
-    logger.info("Initializing Offline Voice-to-Text VTT App...")
-    logger.info("System Trigger: Press %s to toggle recording.", HOTKEY)
-
-    if IS_MAC_SILICON:
-        logger.info("Warming up MLX Whisper model memory buffers...")
-        try:
-            # Emit a blank 1s float32 audio signature to ensure memory
-            # initializes.
-            dummy_audio = np.zeros(16000, dtype=np.float32)
-            mlx_whisper.transcribe(dummy_audio, path_or_hf_repo=MODEL_PATH)
-            logger.info("Local MLX model ready!")
-        except Exception as e:
-            logger.error("Model warmup failed: %s", e)
-
-    run_ui()
+    # CRITICAL: Required for PyInstaller to not fork bomb when spawning background 
+    # child processes for MLX/Whisper inference.
+    multiprocessing.freeze_support()
+    main()

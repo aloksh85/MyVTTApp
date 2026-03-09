@@ -1,7 +1,7 @@
 mlx-whisper
 sounddevice
 soundfile
-pynput
+
 pyperclip
 rumps
 numpy

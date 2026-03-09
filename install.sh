@@ -25,7 +25,7 @@ echo "Upgrading pip..."
 pip install --upgrade pip
 
 echo "Installing base requirements..."
-pip install sounddevice soundfile pynput pyperclip numpy
+pip install sounddevice soundfile pynput pyperclip numpy PyQt6
 
 # OS and Architecture Detection
 OS="$(uname -s)"
