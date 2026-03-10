@@ -1,8 +1,8 @@
 """
-Platform / Clipboard Integration Module.
+Platform / Text Injection Module.
 
-Handles securely typing/pasting text into the active user window
-while maintaining clipboard privacy state.
+Handles pasting transcribed text into the active user window
+using the system clipboard and a simulated Cmd+V keystroke.
 """
 
 import logging
@@ -18,12 +18,15 @@ OS_NAME: str = platform.system()
 
 
 class ClipboardManager:
-    """Manages secure text injection into other applications."""
+    """Manages text injection into other applications."""
 
     @staticmethod
     def type_text(text: str) -> None:
         """
-        Securely paste text into the active user window.
+        Inject text into the active user window via clipboard paste.
+
+        Copies the text to the system clipboard, then simulates
+        Cmd+V (macOS) or Ctrl+V (Linux) to paste it at the cursor.
 
         Args:
             text: The text to inject.
@@ -31,52 +34,52 @@ class ClipboardManager:
         if not text:
             return
 
-        # Disabled original clipboard backup to prevent macOS AppleScript race conditions.
-        # try:
-        #     original_clipboard = pyperclip.paste()
-        # except Exception as e:
-        #     logger.warning("Could not read original clipboard: %s", e)
-        #     original_clipboard = ""
-
         try:
             pyperclip.copy(text)
-            # Give macOS enough time to visibly restore focus to the underlying app 
-            # after the PyQt6 window hides itself.
-            time.sleep(0.4) 
         except Exception as e:
             logger.error("Clipboard write failed: %s", e)
             return
 
+        # Brief delay to let macOS settle focus on the target app
+        time.sleep(0.3)
+
         if OS_NAME == "Darwin":
+            # Check native macOS Accessibility permissions explicitly before simulating keys
+            has_access = False
             try:
-                from pynput.keyboard import Key, Controller
-                keyboard = Controller()
-                
-                # Small delay to ensure the OS has shifted focus back to Notion
-                # after the PyQt6 ToolTip bubble hides itself.
-                time.sleep(0.3)
-                
-                # Simulate Cmd+V at the OS driver level
-                keyboard.press(Key.cmd)
-                keyboard.press('v')
-                keyboard.release('v')
-                keyboard.release(Key.cmd)
+                import ctypes
+                app_services = ctypes.CDLL('/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices')
+                app_services.AXIsProcessTrusted.restype = ctypes.c_bool
+                has_access = app_services.AXIsProcessTrusted()
             except Exception as e:
-                logger.error("pynput paste failed: %s", e)
+                logger.error("Failed to check accessibility permissions: %s", e)
+            
+            if has_access:
+                try:
+                    from pynput.keyboard import Key, Controller
+                    keyboard = Controller()
+                    keyboard.press(Key.cmd)
+                    keyboard.press('v')
+                    keyboard.release('v')
+                    keyboard.release(Key.cmd)
+                    logger.info("Text injected via clipboard (pynput Cmd+V).")
+                except Exception as e:
+                    logger.error("pynput paste failed: %s", e)
+            else:
+                logger.error("Accessibility permission missing. Cannot simulate Cmd+V.")
+                subprocess.run([
+                    "osascript", "-e",
+                    'display alert "Accessibility Required" message "NeuroType needs Accessibility permission to automatically paste text. The text is in your clipboard, but please enable NeuroType in System Settings -> Privacy & Security -> Accessibility." buttons {"OK"} default button "OK"'
+                ])
+                subprocess.run(["open", "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"])
         else:
             try:
                 import pyautogui
                 pyautogui.hotkey("ctrl", "v")
+                logger.info("Text injected via clipboard (pyautogui Ctrl+V).")
             except ImportError:
                 logger.warning("pyautogui not installed. Using xdotool.")
                 subprocess.run(["xdotool", "key", "ctrl+v"], check=False)
+                logger.info("Text injected via clipboard (xdotool Ctrl+V).")
 
-        logger.info("Text injected via clipboard.")
 
-        # Disabling aggressive restoration. macOS needs time to async process Cmd+V.
-        # Leaving the text in the pasteboard also acts as a great UX fallback!
-        # time.sleep(0.1)  
-        # try:
-        #     pyperclip.copy(original_clipboard)
-        # except Exception as e:
-        #     logger.error("Failed to restore clipboard state: %s", e)
