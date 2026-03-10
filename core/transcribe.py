@@ -32,7 +32,7 @@ class Transcriber:
     def __init__(self) -> None:
         """Initialize the model based on system architecture."""
         if IS_MAC_SILICON:
-            self.model_path = "mlx-community/whisper-base-mlx"
+            self.model_path = "mlx-community/whisper-small-mlx"
             self._warmup_mlx()
         else:
             self.model_path = "base"
